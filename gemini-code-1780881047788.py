@@ -1,0 +1,278 @@
+import streamlit as st
+import random
+import time
+from streamlit_autorefresh import st_autorefresh
+
+# 設置網頁標題與風格
+st.set_page_config(page_title="狼人殺 Online - Streamlit版", layout="wide")
+
+# 1. 強制網頁每 2 秒自動刷新一次，達到跨瀏覽器即時同步的效果
+st_autorefresh(interval=2000, key="werewolf_refresh")
+
+# 2. 定義 10 人局身分配置
+ORIGINAL_ROLES = [
+    {"name": "狼人", "icon": "🐺", "color": "#ff4d4d"},
+    {"name": "狼人", "icon": "🐺", "color": "#ff4d4d"},
+    {"name": "狼人", "icon": "🐺", "color": "#ff4d4d"},
+    {"name": "預言家", "icon": "🔮", "color": "#4da6ff"},
+    {"name": "女巫", "icon": "🧪", "color": "#4dff4d"},
+    {"name": "調停者", "icon": "⚖", "color": "#ffcc00"},
+    {"name": "叛徒", "icon": "🃏", "color": "#b366ff"},
+    {"name": "平民", "icon": "🧑‍🌾", "color": "#c9d1d9"},
+    {"name": "平民", "icon": "🧑‍🌾", "color": "#c9d1d9"},
+    {"name": "平民", "icon": "🧑‍🌾", "color": "#c9d1d9"},
+]
+
+# 3. 初始化「全域中央伺服器狀態」（所有瀏覽器共享此記憶體）
+@st.cache_resource
+def get_global_server_state():
+    return {
+        "status": "等待開始",  # 等待開始, 進行中, 結束
+        "phase": "準備階段",   # 黑夜階段, 白天階段
+        "day_count": 1,
+        "players": [],         # 存放玩家資訊字典
+        "logs": ["🎲 遊戲室已建立，等待玩家加入..."]
+    }
+
+server = get_global_server_state()
+
+# 4. 處理「當前玩家分頁」的本地 Session（每個瀏覽器獨立）
+if "my_seat_id" not in st.session_state:
+    st.session_state.my_seat_id = None
+if "my_name" not in st.session_state:
+    st.session_state.my_name = None
+if "selected_target" not in st.session_state:
+    st.session_state.selected_target = None
+
+# ==================== 🛠️ 輔助函式 ====================
+def add_log(msg):
+    timestamp = time.strftime("%H:%M:%S", time.localtime())
+    server["logs"].append(f"[{timestamp}] {msg}")
+
+def check_game_end():
+    alive_wolves = sum(1 for p in server["players"] if p["is_alive"] and p["role"] == "狼人")
+    alive_goods = sum(1 for p in server["players"] if p["is_alive"] and p["role"] != "狼人")
+    
+    if alive_wolves == 0:
+        server["status"] = "結束"
+        add_log("🎉 【遊戲結束】所有狼人已出局，好人陣營勝利！")
+    elif alive_wolves >= alive_goods:
+        server["status"] = "結束"
+        add_log("🐺 【遊戲結束】狼人屠殺殆盡，狼人陣營勝利！")
+
+# ==================== 🚪 登入/加入房間介面 ====================
+if st.session_state.my_seat_id is None:
+    st.markdown("<h1 style='text-align: center; color: #d4af37;'>🐺 狼人殺 Online (Streamlit)</h1>", unsafe_allow_html=True)
+    
+    with st.container(border=True):
+        st.write("### 歡迎加入對戰房間")
+        name_input = st.text_input("請輸入你的暱稱：", placeholder="例如：帥氣預言家")
+        
+        if st.button("加入遊戲", use_container_width=True):
+            if not name_input.strip():
+                st.error("暱稱不能為空！")
+            elif server["status"] != "等待開始":
+                st.error("遊戲已在進行中，無法加入！")
+            elif len(server["players"]) >= 10:
+                st.error("房間已滿 10 人！")
+            else:
+                new_id = len(server["players"]) + 1
+                server["players"].append({
+                    "id": new_id,
+                    "name": name_input,
+                    "role": "未知",
+                    "icon": "❓",
+                    "color": "#8b949e",
+                    "is_alive": True
+                })
+                st.session_state.my_seat_id = new_id
+                st.session_state.my_name = name_input
+                add_log(f"👥 {name_input} 進入了房間。({len(server['players'])}/10)")
+                st.rerun()
+    st.stop()
+
+# ==================== 🎮 進入遊戲主畫面 ====================
+my_id = st.session_state.my_seat_id
+# 防呆：如果伺服器重啟或被踢出，重置本地狀態
+my_info = next((p for p in server["players"] if p["id"] == my_id), None)
+if not my_info:
+    st.session_state.my_seat_id = None
+    st.rerun()
+
+my_role = my_info["role"]
+
+# 頂部狀態列
+st.title("🐺 狼人殺上帝控制台 (聯機版)")
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("房間狀態", server["status"])
+col2.metric("當前階段", server["phase"])
+col3.metric("遊戲天數", f"第 {server['day_count']} 天")
+col4.metric("目前人數", f"{len(server['players'])} / 10 人")
+
+st.divider()
+
+# 三欄式佈局
+left_col, main_col, right_col = st.columns([1, 2, 1.2])
+
+# ----------------- 👈 左側欄：我的狀態與主辦人控制 -----------------
+with left_col:
+    st.subheader("📋 我的狀態卡")
+    with st.container(border=True):
+        st.write(f"**座位號：** {my_id} 號位")
+        st.write(f"**你的暱稱：** {st.session_state.my_name}")
+        st.write(f"**存活狀態：** {'🟢 存活' if my_info['is_alive'] else '💀 已出局'}")
+        
+        # 顯示個人身分（彩色高亮）
+        if my_role != "未知":
+            st.markdown(f"**秘密身分：** <span style='color:{my_info['color']}; font-weight:bold;'>{my_info['icon']} {my_role}</span>", unsafe_allow_html=True)
+        else:
+            st.write("**秘密身分：** 等待發牌...")
+
+    st.write("")
+    st.subheader("👑 主辦人控制 (1號位限定)")
+    is_host = (my_id == 1)
+    
+    btn_start = st.button("🎲 開始發牌", disabled=(server["status"] != "等待開始" or not is_host), use_container_width=True)
+    btn_night = st.button("🌙 進入夜晚", disabled=(server["status"] != "進行中" or server["phase"] == "黑夜階段" or not is_host), use_container_width=True)
+    btn_day = st.button("☀️ 進入白天", disabled=(server["status"] != "進行中" or server["phase"] == "白天階段" or not is_host), use_container_width=True)
+    
+    if btn_start:
+        server["status"] = "進行中"
+        server["phase"] = "黑夜階段"
+        server["day_count"] = 1
+        shuffled = list(ORIGINAL_ROLES)
+        random.shuffle(shuffled)
+        for idx, p in enumerate(server["players"]):
+            p["role"] = shuffled[idx]["name"]
+            p["icon"] = shuffled[idx]["icon"]
+            p["color"] = shuffled[idx]["color"]
+            p["is_alive"] = True
+        add_log("🎲 遊戲正式開始！身分已秘密下發，天黑請閉眼...")
+        add_log("🌙 進入第 1 天夜晚。狼人請行動。")
+        st.rerun()
+
+    if btn_night:
+        server["phase"] = "黑夜階段"
+        add_log(f"🌙 進入第 {server['day_count']} 天夜晚。狼人開始行動。")
+        st.rerun()
+
+    if btn_day:
+        server["phase"] = "白天階段"
+        add_log(f"☀️ 天亮了！進入第 {server['day_count']} 天白天，請發言與公投。")
+        server["day_count"] += 1
+        st.rerun()
+        
+    if st.button("🛑 重置遊戲", type="primary", use_container_width=True if is_host else False, disabled=not is_host):
+        server["status"] = "等待開始"
+        server["phase"] = "準備階段"
+        server["day_count"] = 1
+        server["players"] = []
+        server["logs"] = ["🎲 遊戲已由 1 號玩家強制重置。"]
+        st.rerun()
+
+# ----------------- 🖕 中間欄：戰場卡片與技能 -----------------
+with main_col:
+    st.subheader("⚔️ 戰場玩家列表")
+    
+    # 這裡將 10 個玩家用卡片 Grid 橫向排列呈現
+    # 由於 Streamlit 的限制，我們用 5 欄 * 2 列 來排版
+    cards_per_row = 5
+    for i in range(0, 10, cards_per_row):
+        cols = st.columns(cards_per_row)
+        for j in range(cards_per_row):
+            idx = i + j
+            with cols[j]:
+                if idx < len(server["players"]):
+                    p = server["players"][idx]
+                    
+                    # 安全隱私機制遮蔽：決定該看見什麼身分
+                    is_self = (p["id"] == my_id)
+                    is_both_wolf = (p["role"] == "狼人" and my_role == "狼人")
+                    
+                    show_role = p["role"] if (is_self or is_both_wolf or not p["is_alive"]) else "未知身份"
+                    show_icon = p["icon"] if (is_self or is_both_wolf or not p["is_alive"]) else "❓"
+                    show_color = p["color"] if (is_self or is_both_wolf or not p["is_alive"]) else "#8b949e"
+                    
+                    if not p["is_alive"]:
+                        show_icon = "💀"
+                        show_role = "已出局"
+                        show_color = "#f85149"
+                    
+                    # 用 Markdown 刻出漂亮的灰黑卡片
+                    st.markdown(
+                        f"""
+                        <div style="background-color:#1c2128; border:2px solid {show_color}; border-radius:8px; padding:10px; text-align:center; min-height:140px;">
+                            <div style="font-size:11px; color:#8b949e;">{p['id']}號位 [{p['name']}]</div>
+                            <div style="font-size:32px; margin:8px 0;">{show_icon}</div>
+                            <div style="font-weight:bold; color:{show_color}; font-size:14px;">{show_role}</div>
+                        </div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
+                else:
+                    # 空座位
+                    st.markdown(
+                        """
+                        <div style="background-color:#161b22; border:1px dashed #30363d; border-radius:8px; padding:10px; text-align:center; min-height:140px; display:flex; flex-direction:column; justify-content:center;">
+                            <div style="color:#8b949e; font-size:13px;">等待玩家...</div>
+                        </div>
+                        """, 
+                        unsafe_allow_html=True
+                    )
+
+    st.write("")
+    st.subheader("🎯 互動行動區")
+    
+    # 選擇目標下拉選單（過濾出還活著的玩家）
+    alive_targets = [p["id"] for p in server["players"] if p["is_alive"]]
+    target_options = ["請選擇目標..."] + [f"{pid} 號玩家" for pid in alive_targets]
+    
+    selected_option = st.selectbox("選擇行動目標：", options=target_options)
+    
+    col_act1, col_act2, col_act3 = st.columns(3)
+    
+    # 檢查是否選取了有效目標
+    target_id = None
+    if selected_option != "請選擇目標...":
+        target_id = int(selected_option.split(" ")[0])
+        
+    # 技能發動按鈕控制
+    act_kill = col_act1.button("🗡️ 投票/擊殺", disabled=(server["status"] != "進行中" or not target_id), use_container_width=True)
+    act_heal = col_act2.button("❤️ 解藥/救活", disabled=(server["status"] != "進行中" or not target_id), use_container_width=True)
+    act_check = col_act3.button("🔮 查驗身分", disabled=(server["status"] != "進行中" or my_role != "預言家" or not target_id), use_container_width=True)
+
+    if act_kill and target_id:
+        t_player = next(p for p in server["players"] if p["id"] == target_id)
+        t_player["is_alive"] = False
+        add_log(f"🗡️ 系統公告：{target_id} 號玩家 ({t_player['name']}) 被處決/擊殺出局。")
+        check_game_end()
+        st.session_state.selected_target = None
+        st.rerun()
+
+    if act_heal and target_id:
+        # 解藥也可以針對死掉的人（這裡放寬為死活都能按，並強制拉回存活）
+        t_player = next(p for p in server["players"] if p["id"] == target_id)
+        t_player["is_alive"] = True
+        add_log(f"❤️ 系統公告：神蹟顯現！{target_id} 號玩家 ({t_player['name']}) 復活了。")
+        st.session_state.selected_target = None
+        st.rerun()
+
+    if act_check and target_id:
+        t_player = next(p for p in server["players"] if p["id"] == target_id)
+        st.info(f"🔮 預言家秘密查驗：{target_id} 號玩家的真實身分是 【{t_player['role']}】")
+
+# ----------------- 👉 右側欄：廣播記錄與說明 -----------------
+with right_col:
+    st.subheader("📢 上帝廣播日誌")
+    # 將日誌反轉，最新的顯示在最上面
+    log_text = "\n".join(reversed(server["logs"]))
+    st.text_area("遊戲即時動態", value=log_text, height=350, disabled=True)
+    
+    with st.expander("📜 10人局身分規則說明"):
+        st.write("""
+        - **狼人 (3名)**：黑夜時可互相確認隊友，目標是殺光好人。
+        - **預言家 (1名)**：每晚可查驗一位玩家的真實身分。
+        - **女巫 (1名)**：擁有一瓶毒藥與解藥（此版本上帝按鈕代勞）。
+        - **調停者、叛徒 (各1名)**：具特殊功能之配角。
+        - **平民 (3名)**：沒有功能，白天需靠發言找出狼人。
+        """)
